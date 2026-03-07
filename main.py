@@ -55,23 +55,16 @@ def main():
         # Initialisation des modules
         print("\n Initialisation caméra...")
         camera = CameraManager()
-
         print(" Chargement IA...")
         detector = ObjectDetector(MODEL_PATH, CONFIDENCE_THRESHOLD)
-
         print(" Initialisation distance...")
         distance_estimator = DistanceEstimator(FRAME_WIDTH, FRAME_HEIGHT)
-
         print(" Initialisation moteur décision...")
         decision_engine = DecisionEngine()
-
         print(" Initialisation audio...")
         audio = AudioManager()
-
         print(" Prêt ! Appuie sur 'q' pour quitter\n")
-
         last_announcement_time = 0
-
         while True:
             frame = camera.get_frame()
             if frame is None:
@@ -135,14 +128,14 @@ def main():
                 break
 
     except Exception as e:
-        print(f"❌ Erreur : {e}")
+        print(f" Erreur : {e}")
 
     finally:
-        print("\n🛑 Nettoyage...")
+        print("\n Nettoyage...")
         if 'camera' in locals():
             camera.release()
         cv2.destroyAllWindows()
-        print("👋 Arrêt du prototype")
+        print(" Arrêt du prototype")
 
 if __name__ == "__main__":
     main()
