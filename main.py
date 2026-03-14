@@ -68,7 +68,7 @@ def main():
         while True:
             frame = camera.get_frame()
             if frame is None:
-                print("❌ Impossible de lire la caméra")
+                print(" Impossible de lire la caméra")
                 break
 
             # Détection objets connus
