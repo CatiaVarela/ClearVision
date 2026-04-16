@@ -1,5 +1,0 @@
-# requirements.txt - Stable version avec pygame uniquement
-opencv-python==4.11.0.86
-ultralytics==8.3.101
-numpy==2.2.4
-pygame==2.6.1
