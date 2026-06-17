@@ -1,0 +1,15 @@
+# ClearVision — dataset custom
+# Chemins relatifs à ce fichier
+
+path: .
+train: images/train
+val: images/val
+
+names:
+  0: arbre
+  1: buisson
+  2: chien
+  3: chat
+  4: oiseau
+  5: fleur
+  6: personne

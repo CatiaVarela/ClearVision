@@ -1,0 +1,5 @@
+{
+  "labels_present": ["person"],
+  "min_detections": 0,
+  "max_detections": 50
+}

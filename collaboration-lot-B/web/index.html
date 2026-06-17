@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ClearVision — Détection d'objets</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 900px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+      background: #0f172a;
+      color: #e2e8f0;
+    }
+    h1 { color: #60a5fa; }
+    #drop-zone {
+      border: 2px dashed #3b82f6;
+      border-radius: 12px;
+      padding: 3rem;
+      text-align: center;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    #drop-zone:hover, #drop-zone.dragover { background: #1e293b; }
+    #preview { max-width: 100%; margin-top: 1.5rem; border-radius: 8px; }
+    #detections { margin-top: 1rem; }
+    #detections li { margin: 0.3rem 0; }
+    #status { color: #94a3b8; margin-top: 1rem; }
+    button {
+      margin-top: 1rem;
+      padding: 0.6rem 1.2rem;
+      background: #3b82f6;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: wait; }
+  </style>
+</head>
+<body>
+  <h1>ClearVision</h1>
+  <p>Déposez une image pour détecter les objets et êtres vivants (rectangles bleus).</p>
+
+  <div id="drop-zone">
+    Glissez une image ici ou cliquez pour choisir
+    <input type="file" id="file-input" accept="image/*" hidden>
+  </div>
+
+  <label>
+    <input type="checkbox" id="fast-mode"> Mode rapide (sans YOLO-World)
+  </label>
+
+  <div id="status"></div>
+  <img id="preview" alt="Résultat" style="display:none">
+  <ul id="detections"></ul>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
