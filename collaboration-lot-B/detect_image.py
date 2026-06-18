@@ -4,9 +4,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-
 import cv2
-
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
@@ -35,7 +33,6 @@ def main():
         raise FileNotFoundError(f"Image introuvable : {arguments.image.resolve()}")
 
     annotated_image, detection_info = detect_objects_in_image(source_image, fast=arguments.fast)
-
     output_path = arguments.output or build_output_path(arguments.image)
     cv2.imwrite(str(output_path), annotated_image)
     print(f"Image annotée : {output_path.resolve()}")
