@@ -14,7 +14,6 @@ from detection import detect_objects_in_image, detections_to_json
 
 def build_output_path(image_path: Path) -> Path:
     return image_path.with_name(f"{image_path.stem}_detected{image_path.suffix}")
-
 def main():
     parser = argparse.ArgumentParser(
         description="ClearVision — reconnaissance d'objets sur image (rectangles bleus)"
