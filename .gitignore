@@ -1,0 +1,32 @@
+# Modèles ML (téléchargés localement)
+*.pt
+*.onnx
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Sorties générées
+*_yoloworld.*
+*_resultat.*
+clearvision_voice_*/
+
+# IDE
+.idea/
+
+# Tests / données lourdes
+tests/fixtures/*.jpg
+tests/fixtures/*.png
+images/*.jpg
+images/*.png
+images/*.webp
+!images/README.md
+
+# Datasets
+datasets/custom/images/
+datasets/custom/labels/
+runs/

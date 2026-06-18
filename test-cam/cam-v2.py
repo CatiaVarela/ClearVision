@@ -1,15 +1,21 @@
-import cv2
+import sys
 import time
+from pathlib import Path
+
+import cv2
 import pytesseract
 import pyttsx3
 from ultralytics import YOLO
 
-# --- 1. CONFIGURATION ---
-# Chemin Tesseract (à vérifier selon ton installation)
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
-# Chargement du modèle (YOLO11n est rapide pour la vidéo)
-model = YOLO("yolo11n.pt")
+from config import YOLO_COCO_PATH
+
+# Chemin Tesseract (à vérifier selon ton installation)
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+model = YOLO(str(YOLO_COCO_PATH))
 
 # Initialisation de la voix
 engine = pyttsx3.init()

@@ -1,17 +1,9 @@
 import argparse
-import importlib.util
 import sys
 import time
 from pathlib import Path
 
 import cv2
-from ultralytics import YOLO, YOLOWorld
-
-# --- CONFIG ---
-DEFAULT_VIDEO = Path("../videos/38805-418875307.mp4")
-YOLO_COCO_PATH = "../yolo11n.pt"
-YOLO_WORLD_PATH = "../test-images/yolov8s-world.pt"
-PROGRESS_EVERY = 30
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _ROOT = _SCRIPT_DIR.parent
@@ -24,25 +16,15 @@ from clearvision_voice import (
     build_narration_wav,
     mux_audio_into_video,
 )
+from config import DEFAULT_VIDEO, YOLO_COCO_PATH, YOLO_WORLD_PATH
+from detection import load_coco_model, load_world_model, process_frame
 
-_YOLO_WORLD_SCRIPT = _ROOT / "test-images" / "yolo-world-test.py"
-
-
-def _load_yolo_world_module():
-    spec = importlib.util.spec_from_file_location("yolo_world_test", _YOLO_WORLD_SCRIPT)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Impossible de charger {_YOLO_WORLD_SCRIPT}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["yolo_world_test"] = module
-    spec.loader.exec_module(module)
-    return module
+PROGRESS_EVERY = 30
+VOICE_FRAME_STRIDE = 2
 
 
 def result_path_for(video_path: Path) -> Path:
     return video_path.with_name(f"{video_path.stem}_yoloworld{video_path.suffix}")
-
-
-VOICE_FRAME_STRIDE = 2
 
 
 def main(
@@ -51,167 +33,153 @@ def main(
     fast: bool = False,
     voice: bool = False,
 ):
-    yw = _load_yolo_world_module()
-    process_frame = yw.process_frame
-
     if voice and not fast:
         print("Mode rapide activé automatiquement avec --voice.")
         fast = True
 
-    recorder = SpeechRecorder() if voice else None
-    announcer = (
+    speech_recorder = SpeechRecorder() if voice else None
+    voice_announcer = (
         VoiceAnnouncer(max_distance_m=MAX_DISTANCE_M, playback=False) if voice else None
     )
 
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
+    video_capture = cv2.VideoCapture(str(video_path))
+    if not video_capture.isOpened():
         raise FileNotFoundError(f"Vidéo introuvable : {video_path.resolve()}")
 
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    frames_per_second = video_capture.get(cv2.CAP_PROP_FPS) or 25.0
+    frame_width = int(video_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frame_count = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    out_path = result_path_for(video_path)
-    video_tmp = (
-        out_path.with_name(f"{out_path.stem}_silent{out_path.suffix}") if voice else out_path
+    output_path = result_path_for(video_path)
+    silent_video_path = (
+        output_path.with_name(f"{output_path.stem}_silent{output_path.suffix}") if voice else output_path
     )
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(str(video_tmp), fourcc, fps, (width, height))
-    if not writer.isOpened():
-        cap.release()
-        raise RuntimeError(f"Impossible d'écrire la vidéo : {out_path.resolve()}")
+    video_writer = cv2.VideoWriter(
+        str(silent_video_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        frames_per_second,
+        (frame_width, frame_height),
+    )
+    if not video_writer.isOpened():
+        video_capture.release()
+        raise RuntimeError(f"Impossible d'écrire la vidéo : {output_path.resolve()}")
 
-    yolo_model = YOLO(YOLO_COCO_PATH)
-    world_model = None if fast else YOLOWorld(YOLO_WORLD_PATH)
+    yolo_model = load_coco_model()
+    world_model = None if fast else load_world_model()
 
-    frame_idx = 0
-    hsv_frames = 0
-    veg_total = 0
-    t0 = time.perf_counter()
+    frame_index = 0
+    hsv_frame_count = 0
+    vegetation_total = 0
+    processing_start = time.perf_counter()
 
     print(f"Traitement : {video_path.resolve()}")
+    print(f"Modèles : {YOLO_COCO_PATH.name}, {YOLO_WORLD_PATH.name if not fast else 'HSV seul'}")
     if fast:
         print("Mode rapide : YOLO-World désactivé (voir --fast)")
     if voice:
         print(f"Annonce vocale : objets à au plus {MAX_DISTANCE_M:.0f} m")
-        print("La voix sera intégrée dans le fichier MP4 exporté.")
-    if total_frames > 0:
-        print(f"Frames : {total_frames} — {width}x{height} @ {fps:.1f} fps")
+    if total_frame_count > 0:
+        print(f"Frames : {total_frame_count} — {frame_width}x{frame_height} @ {frames_per_second:.1f} fps")
 
-    while cap.isOpened():
-        ok, frame = cap.read()
-        if not ok:
+    while video_capture.isOpened():
+        frame_read_ok, frame = video_capture.read()
+        if not frame_read_ok:
             break
 
-        annotated, info = process_frame(
+        annotated_frame, detection_info = process_frame(
             frame,
             yolo_model,
             world_model,
             fast=fast,
             estimate_distances=voice,
         )
-        writer.write(annotated)
+        video_writer.write(annotated_frame)
 
-        if announcer is not None and frame_idx % VOICE_FRAME_STRIDE == 0:
-            h, w = frame.shape[:2]
-            message = announcer.maybe_announce(
-                info["detections"],
-                w,
-                h,
-                record_at_sec=frame_idx / fps,
-                recorder=recorder,
+        if voice_announcer is not None and frame_index % VOICE_FRAME_STRIDE == 0:
+            frame_height, frame_width = frame.shape[:2]
+            spoken_message = voice_announcer.maybe_announce(
+                detection_info["detections"],
+                frame_width,
+                frame_height,
+                record_at_sec=frame_index / frames_per_second,
+                recorder=speech_recorder,
             )
-            if message:
-                print(f"  [voix] {message}")
+            if spoken_message:
+                print(f"  [voix] {spoken_message}")
 
-        veg_total += info["veg_drawn"]
-        if info["used_hsv"]:
-            hsv_frames += 1
+        vegetation_total += detection_info["veg_drawn"]
+        if detection_info["used_hsv"]:
+            hsv_frame_count += 1
 
-        frame_idx += 1
-        if frame_idx % PROGRESS_EVERY == 0:
-            elapsed = time.perf_counter() - t0
-            fps_proc = frame_idx / elapsed if elapsed > 0 else 0.0
-            if total_frames > 0:
-                pct = 100.0 * frame_idx / total_frames
-                print(f"  {frame_idx}/{total_frames} ({pct:.0f} %) — {fps_proc:.1f} img/s")
+        frame_index += 1
+        if frame_index % PROGRESS_EVERY == 0:
+            elapsed_seconds = time.perf_counter() - processing_start
+            processing_fps = frame_index / elapsed_seconds if elapsed_seconds > 0 else 0.0
+            if total_frame_count > 0:
+                progress_percent = 100.0 * frame_index / total_frame_count
+                print(f"  {frame_index}/{total_frame_count} ({progress_percent:.0f} %) — {processing_fps:.1f} img/s")
             else:
-                print(f"  frame {frame_idx} — {fps_proc:.1f} img/s")
+                print(f"  frame {frame_index} — {processing_fps:.1f} img/s")
 
         if show_gui:
             try:
-                preview = cv2.resize(annotated, (1000, 800))
-                cv2.imshow("ClearVision - YOLO-World (vidéo)", preview)
+                preview_frame = cv2.resize(annotated_frame, (1000, 800))
+                cv2.imshow("ClearVision - Vidéo", preview_frame)
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     print("Arrêt anticipé (touche q).")
                     break
             except cv2.error:
                 show_gui = False
 
-    cap.release()
-    writer.release()
+    video_capture.release()
+    video_writer.release()
     if show_gui:
         cv2.destroyAllWindows()
 
-    duration_sec = frame_idx / fps if fps > 0 else 0.0
+    video_duration_seconds = frame_index / frames_per_second if frames_per_second > 0 else 0.0
 
-    if voice and recorder is not None:
-        if recorder.pending_count > 0:
-            print(f"Synthèse vocale de {recorder.pending_count} annonce(s)...")
-            recorder.synthesize_all()
-        if recorder.count > 0:
+    if voice and speech_recorder is not None:
+        if speech_recorder.pending_count > 0:
+            print(f"Synthèse vocale de {speech_recorder.pending_count} annonce(s)...")
+            speech_recorder.synthesize_all()
+        if speech_recorder.count > 0:
             try:
-                narr_wav = recorder.work_dir / "narration.wav"
-                build_narration_wav(recorder.clips, duration_sec, narr_wav)
+                narration_wav_path = speech_recorder.work_dir / "narration.wav"
+                build_narration_wav(speech_recorder.clips, video_duration_seconds, narration_wav_path)
                 print("Fusion audio + vidéo...")
-                mux_audio_into_video(video_tmp, narr_wav, out_path)
-                video_tmp.unlink(missing_ok=True)
-                print(f"Voix intégrée : {recorder.count} annonce(s) dans la vidéo.")
-            except (ImportError, RuntimeError) as exc:
-                print(f"Attention : voix non intégrée — {exc}")
-                if video_tmp.exists() and not out_path.exists():
-                    video_tmp.rename(out_path)
-        elif video_tmp.exists():
-            video_tmp.rename(out_path)
+                mux_audio_into_video(silent_video_path, narration_wav_path, output_path)
+                silent_video_path.unlink(missing_ok=True)
+                print(f"Voix intégrée : {speech_recorder.count} annonce(s) dans la vidéo.")
+            except (ImportError, RuntimeError) as error:
+                print(f"Attention : voix non intégrée — {error}")
+                if silent_video_path.exists() and not output_path.exists():
+                    silent_video_path.rename(output_path)
+        elif silent_video_path.exists():
+            silent_video_path.rename(output_path)
 
-    elapsed = time.perf_counter() - t0
-    print(f"Vidéo enregistrée : {out_path.resolve()}")
-    print(f"Frames traitées : {frame_idx} en {elapsed:.1f} s")
-    if frame_idx:
-        print(f"Végétation (moy.) : {veg_total / frame_idx:.1f} zone(s)/frame")
-        print(f"Secours HSV : {hsv_frames}/{frame_idx} frame(s)")
+    elapsed_seconds = time.perf_counter() - processing_start
+    print(f"Vidéo enregistrée : {output_path.resolve()}")
+    print(f"Frames traitées : {frame_index} en {elapsed_seconds:.1f} s")
+    if frame_index:
+        print(f"Végétation (moy.) : {vegetation_total / frame_index:.1f} zone(s)/frame")
+        print(f"Secours HSV : {hsv_frame_count}/{frame_index} frame(s)")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Détection COCO + arbres/buissons sur une vidéo"
-    )
-    parser.add_argument(
-        "--video",
-        type=Path,
-        default=DEFAULT_VIDEO,
-        help="Chemin de la vidéo à analyser",
-    )
-    parser.add_argument(
-        "--no-gui",
-        action="store_true",
-        help="Sauvegarder uniquement, sans prévisualisation OpenCV",
-    )
-    parser.add_argument(
-        "--fast",
-        action="store_true",
-        help="Sans YOLO-World (≈5× plus rapide) ; végétation via haie d'arbres seulement",
-    )
+    parser = argparse.ArgumentParser(description="Détection universelle sur vidéo")
+    parser.add_argument("--video", type=Path, default=DEFAULT_VIDEO, help="Vidéo à analyser")
+    parser.add_argument("--no-gui", action="store_true", help="Sans prévisualisation OpenCV")
+    parser.add_argument("--fast", action="store_true", help="Sans YOLO-World (plus rapide)")
     parser.add_argument(
         "--voice",
         action="store_true",
         help=f"Voix intégrée dans le MP4 (détections ≤ {MAX_DISTANCE_M:.0f} m)",
     )
-    args = parser.parse_args()
+    arguments = parser.parse_args()
     main(
-        video_path=args.video,
-        show_gui=not args.no_gui,
-        fast=args.fast,
-        voice=args.voice,
+        video_path=arguments.video,
+        show_gui=not arguments.no_gui,
+        fast=arguments.fast,
+        voice=arguments.voice,
     )

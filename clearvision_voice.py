@@ -38,6 +38,18 @@ REAL_HEIGHT_M = {
     "stop sign": 2.10,
     "fire hydrant": 1.00,
     "backpack": 0.50,
+    "deer": 1.20,
+    "squirrel": 0.25,
+    "rabbit": 0.35,
+    "fox": 0.45,
+    "duck": 0.40,
+    "lion": 1.20,
+    "tiger": 1.10,
+    "tree_line": 3.00,
+    "hedge": 1.50,
+    "foliage": 2.00,
+    "tree in park": 4.00,
+    "flower": 0.40,
 }
 DEFAULT_HEIGHT_M = 1.0
 
@@ -105,7 +117,33 @@ COCO_LABEL_FR = {
     "handbag": "sac",
     "suitcase": "valise",
     "skateboard": "skateboard",
+    "deer": "cerf",
+    "squirrel": "écureuil",
+    "rabbit": "lapin",
+    "fox": "renard",
+    "fish": "poisson",
+    "butterfly": "papillon",
+    "duck": "canard",
+    "lion": "lion",
+    "tiger": "tigre",
+    "monkey": "singe",
+    "snake": "serpent",
+    "frog": "grenouille",
+    "tree_line": "arbre",
+    "hedge": "haie",
+    "foliage": "végétation",
+    "tree in park": "arbre",
+    "evergreen tree": "arbre",
+    "flower": "fleur",
+    "grass": "herbe",
 }
+
+try:
+    from config import LABEL_FR as CONFIG_LABEL_FR
+
+    COCO_LABEL_FR = {**CONFIG_LABEL_FR, **COCO_LABEL_FR}
+except ImportError:
+    pass
 
 
 def label_to_fr(label_key: str, label_fr_map: dict | None = None) -> str:
