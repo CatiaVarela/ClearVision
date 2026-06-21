@@ -83,8 +83,13 @@ def main(
         print(f"Frames : {total_frame_count} — {frame_width}x{frame_height} @ {frames_per_second:.1f} fps")
 
     while video_capture.isOpened():
+        # SÉCURITÉ : Si on a atteint ou dépassé le nombre théorique de frames, on s'arrête
+        if total_frame_count > 0 and frame_index >= total_frame_count:
+            print(" Fin de la vidéo atteinte (sécurité du compteur).")
+            break
+
         frame_read_ok, frame = video_capture.read()
-        if not frame_read_ok:
+        if not frame_read_ok or frame is None: # Ajout d'une vérification si la frame est vide
             break
 
         annotated_frame, detection_info = process_frame(
@@ -136,6 +141,8 @@ def main(
     video_writer.release()
     if show_gui:
         cv2.destroyAllWindows()
+        for _ in range(5):
+            cv2.waitKey(1)
 
     video_duration_seconds = frame_index / frames_per_second if frames_per_second > 0 else 0.0
 

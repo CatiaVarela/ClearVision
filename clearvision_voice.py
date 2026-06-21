@@ -192,19 +192,34 @@ def _pick_french_voice(engine: pyttsx3.Engine) -> None:
 
 
 def synthesize_message_to_wav(message: str, wav_path: Path) -> None:
-    """Génère un WAV (moteur neuf à chaque fois — évite le blocage pyttsx3 en boucle)."""
+    """Génère un WAV de manière robuste sous Windows (évite les blocages pyttsx3)."""
+    import gc
+
+    # 1. Initialisation locale stricte
     engine = pyttsx3.init()
     try:
         engine.setProperty("rate", 165)
         _pick_french_voice(engine)
+
         wav_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # 2. Enregistrement
         engine.save_to_file(message, str(wav_path))
         engine.runAndWait()
+
     finally:
+        # 3. Forcer la fermeture propre du moteur
         try:
             engine.stop()
         except Exception:
             pass
+
+        # Nettoyage de la mémoire pour libérer les threads de l'OS
+        del engine
+        gc.collect()
+
+        # 4. Petit break pour laisser le temps à Windows de relâcher le fichier .wav
+        time.sleep(0.3)
 
 
 class SpeechRecorder:
@@ -221,11 +236,30 @@ class SpeechRecorder:
 
     def synthesize_all(self) -> None:
         self.clips.clear()
+        from gtts import gTTS
+
         for index, (start_sec, message) in enumerate(self.pending):
             wav_path = self.work_dir / f"clip_{index:04d}.wav"
-            synthesize_message_to_wav(message, wav_path)
-            if wav_path.exists() and wav_path.stat().st_size > 100:
-                self.clips.append((start_sec, wav_path))
+
+            print(f"  [DEBUG TTS] Début synthèse {index+1}/{len(self.pending)}: '{message}'")
+
+            try:
+                wav_path.parent.mkdir(parents=True, exist_ok=True)
+
+                # Génération du fichier audio avec gTTS (Voix française)
+                tts = gTTS(text=message, lang="fr", slow=False)
+                tts.save(str(wav_path))
+
+                print(f"  [DEBUG TTS] Fin synthèse {index+1}/{len(self.pending)}")
+
+                if wav_path.exists() and wav_path.stat().st_size > 100:
+                    self.clips.append((start_sec, wav_path))
+
+            except Exception as e:
+                print(f"  [ERREUR TTS] Impossible de générer le clip {index+1} : {e}")
+
+            # Un micro-délai standard de courtoisie réseau
+            time.sleep(0.1)
 
     @property
     def count(self) -> int:
@@ -251,12 +285,12 @@ def build_narration_wav(clips: list[tuple[float, Path]], duration_sec: float, ou
     for start_sec, wav_path in clips:
         if not wav_path.exists():
             continue
-        segment = AudioSegment.from_wav(str(wav_path))
+        # Lecture du format mp3 généré par gtts
+        segment = AudioSegment.from_file(str(wav_path), format="mp3")
         track = track.overlay(segment, position=int(start_sec * 1000))
 
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     track.export(str(out_wav), format="wav")
-
 
 def _find_ffmpeg() -> str:
     ffmpeg = shutil.which("ffmpeg")

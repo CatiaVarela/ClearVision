@@ -17,6 +17,7 @@ clearvision_voice_*/
 
 # IDE
 .idea/
+.idea/*.xml
 
 # Tests / données lourdes
 tests/fixtures/*.jpg
