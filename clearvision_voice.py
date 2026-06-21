@@ -9,16 +9,21 @@ from pathlib import Path
 import pyttsx3
 
 MAX_DISTANCE_M = 4.0
+MAX_OBSTACLES_DISPLAY = 8
 COOLDOWN_S = 2.5
 REPEAT_BLOCK_S = 8.0
 STABLE_FRAMES_REQUIRED = 2
+MAX_VIDEO_ANNOUNCEMENTS = 30
 
-# Calibration : distances calibrées pour une hauteur de référence (évite le biais 1080p).
+# Calibration distance (modèle pinhole simplifié)
 REFERENCE_FRAME_HEIGHT = 720.0
 FOCAL_LENGTH_FACTOR = 0.92
+# Webcam portable : champ plus large, sujet souvent en gros plan (visage/buste)
+WEBCAM_FOCAL_LENGTH_FACTOR = 0.38
 
 REAL_HEIGHT_M = {
     "person": 1.70,
+    "person_group": 1.70,
     "dog": 0.50,
     "cat": 0.30,
     "car": 1.50,
@@ -56,6 +61,7 @@ DEFAULT_HEIGHT_M = 1.0
 # Obstacles annonçables (pas la végétation HSV — distances non fiables).
 VOICE_LABELS = {
     "person",
+    "person_group",
     "dog",
     "cat",
     "car",
@@ -95,6 +101,7 @@ VOICE_EXCLUDED = {
 
 COCO_LABEL_FR = {
     "person": "personne",
+    "person_group": "groupe de personnes",
     "bicycle": "vélo",
     "car": "voiture",
     "motorcycle": "moto",
@@ -155,15 +162,72 @@ def label_to_fr(label_key: str, label_fr_map: dict | None = None) -> str:
 def is_voice_eligible(label_key: str) -> bool:
     if label_key in VOICE_EXCLUDED:
         return False
-    return label_key in VOICE_LABELS
+    if label_key in VOICE_LABELS:
+        return True
+    if label_key in REAL_HEIGHT_M:
+        return True
+    return label_key in COCO_LABEL_FR
 
 
-def estimate_distance_m(bbox, frame_height: int, label_key: str) -> float:
+def is_path_obstacle(label_key: str, source: str = "coco_or_world") -> bool:
+    """
+    Obstacle susceptible de gêner une personne (à afficher / annoncer).
+    Exclut végétation de fond (arbres sur murs, haies HSV, plantes).
+    """
+    if source == "vegetation":
+        return False
+    if label_key in ("person", "person_group"):
+        return True
+
+    try:
+        from object_learning.learned_labels import learned_object_names
+
+        if label_key.lower() in learned_object_names():
+            return True
+    except ImportError:
+        pass
+
+    return is_voice_eligible(label_key)
+
+
+def _effective_real_height_m(label_key: str, bbox: tuple, frame_height: int) -> float:
+    """
+    Hauteur réelle estimée de l'objet.
+    Pour une personne en gros plan (webcam), la boîte ne couvre que le buste/visage :
+    utiliser une hauteur effective plus petite évite de surestimer la distance.
+    """
+    real_height_m = REAL_HEIGHT_M.get(label_key, DEFAULT_HEIGHT_M)
+    if label_key == "person_group":
+        return real_height_m
+    if label_key != "person":
+        return real_height_m
+
     _x1, y1, _x2, y2 = bbox
-    h_px = max(1, y2 - y1)
-    real_h = REAL_HEIGHT_M.get(label_key, DEFAULT_HEIGHT_M)
-    focal_px = REFERENCE_FRAME_HEIGHT * FOCAL_LENGTH_FACTOR
-    return real_h * focal_px / h_px
+    bounding_box_height_ratio = (y2 - y1) / max(1, frame_height)
+
+    if bounding_box_height_ratio > 0.55:
+        return 0.40
+    if bounding_box_height_ratio > 0.35:
+        return 0.65
+    if bounding_box_height_ratio > 0.22:
+        return 1.05
+    return real_height_m
+
+
+def estimate_distance_m(
+    bbox,
+    frame_height: int,
+    label_key: str,
+    *,
+    focal_length_factor: float | None = None,
+) -> float:
+    _x1, y1, _x2, y2 = bbox
+    bounding_box_height_pixels = max(1, y2 - y1)
+    real_height_m = _effective_real_height_m(label_key, bbox, frame_height)
+    focal_factor = focal_length_factor if focal_length_factor is not None else FOCAL_LENGTH_FACTOR
+    # Focale proportionnelle à la hauteur réelle de l'image (pas une valeur 720p fixe)
+    focal_length_pixels = frame_height * focal_factor
+    return real_height_m * focal_length_pixels / bounding_box_height_pixels
 
 
 def horizontal_sector(x_center: float, frame_width: int) -> str:
@@ -192,34 +256,19 @@ def _pick_french_voice(engine: pyttsx3.Engine) -> None:
 
 
 def synthesize_message_to_wav(message: str, wav_path: Path) -> None:
-    """Génère un WAV de manière robuste sous Windows (évite les blocages pyttsx3)."""
-    import gc
-
-    # 1. Initialisation locale stricte
+    """Génère un WAV (moteur neuf à chaque fois — évite le blocage pyttsx3 en boucle)."""
     engine = pyttsx3.init()
     try:
         engine.setProperty("rate", 165)
         _pick_french_voice(engine)
-
         wav_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # 2. Enregistrement
         engine.save_to_file(message, str(wav_path))
         engine.runAndWait()
-
     finally:
-        # 3. Forcer la fermeture propre du moteur
         try:
             engine.stop()
         except Exception:
             pass
-
-        # Nettoyage de la mémoire pour libérer les threads de l'OS
-        del engine
-        gc.collect()
-
-        # 4. Petit break pour laisser le temps à Windows de relâcher le fichier .wav
-        time.sleep(0.3)
 
 
 class SpeechRecorder:
@@ -232,34 +281,31 @@ class SpeechRecorder:
         self.clips: list[tuple[float, Path]] = []
 
     def queue(self, start_sec: float, message: str) -> None:
+        if len(self.pending) >= MAX_VIDEO_ANNOUNCEMENTS:
+            return
         self.pending.append((start_sec, message))
+
+    def dedupe_pending(self) -> None:
+        """Supprime les messages identiques (garde la première occurrence)."""
+        seen_messages: set[str] = set()
+        unique_pending: list[tuple[float, str]] = []
+        for start_sec, message in self.pending:
+            if message in seen_messages:
+                continue
+            seen_messages.add(message)
+            unique_pending.append((start_sec, message))
+        self.pending = unique_pending[:MAX_VIDEO_ANNOUNCEMENTS]
 
     def synthesize_all(self) -> None:
         self.clips.clear()
-        from gtts import gTTS
-
+        total_count = len(self.pending)
         for index, (start_sec, message) in enumerate(self.pending):
+            if total_count > 3:
+                print(f"  Synthèse vocale {index + 1}/{total_count}...")
             wav_path = self.work_dir / f"clip_{index:04d}.wav"
-
-            print(f"  [DEBUG TTS] Début synthèse {index+1}/{len(self.pending)}: '{message}'")
-
-            try:
-                wav_path.parent.mkdir(parents=True, exist_ok=True)
-
-                # Génération du fichier audio avec gTTS (Voix française)
-                tts = gTTS(text=message, lang="fr", slow=False)
-                tts.save(str(wav_path))
-
-                print(f"  [DEBUG TTS] Fin synthèse {index+1}/{len(self.pending)}")
-
-                if wav_path.exists() and wav_path.stat().st_size > 100:
-                    self.clips.append((start_sec, wav_path))
-
-            except Exception as e:
-                print(f"  [ERREUR TTS] Impossible de générer le clip {index+1} : {e}")
-
-            # Un micro-délai standard de courtoisie réseau
-            time.sleep(0.1)
+            synthesize_message_to_wav(message, wav_path)
+            if wav_path.exists() and wav_path.stat().st_size > 100:
+                self.clips.append((start_sec, wav_path))
 
     @property
     def count(self) -> int:
@@ -285,12 +331,12 @@ def build_narration_wav(clips: list[tuple[float, Path]], duration_sec: float, ou
     for start_sec, wav_path in clips:
         if not wav_path.exists():
             continue
-        # Lecture du format mp3 généré par gtts
-        segment = AudioSegment.from_file(str(wav_path), format="mp3")
+        segment = AudioSegment.from_wav(str(wav_path))
         track = track.overlay(segment, position=int(start_sec * 1000))
 
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     track.export(str(out_wav), format="wav")
+
 
 def _find_ffmpeg() -> str:
     ffmpeg = shutil.which("ffmpeg")
@@ -351,26 +397,32 @@ class VoiceAnnouncer:
         self.cooldown_s = cooldown_s
         self.playback = playback
         self._last_spoke = 0.0
+        self._last_spoke_video_sec = -999.0
         self._last_key = ""
         self._last_key_time = 0.0
+        self._last_key_video_sec = -999.0
         self._stable_key = ""
         self._stable_count = 0
 
-        self.engine = pyttsx3.init()
-        self.engine.setProperty("rate", 165)
-        _pick_french_voice(self.engine)
+    def _speak(self, message: str) -> None:
+        """
+        Parle un message à voix haute.
+        Moteur pyttsx3 neuf à chaque appel — évite le blocage après la 1re annonce.
+        """
+        if not self.playback:
+            return
 
-    def _speak(self, message: str, wav_path: Path | None = None) -> None:
-        if wav_path is not None:
-            wav_path.parent.mkdir(parents=True, exist_ok=True)
-            self.engine.save_to_file(message, str(wav_path))
-            self.engine.runAndWait()
-            if self.playback and wav_path.exists():
-                self.engine.say(message)
-                self.engine.runAndWait()
-        elif self.playback:
-            self.engine.say(message)
-            self.engine.runAndWait()
+        engine = pyttsx3.init()
+        try:
+            engine.setProperty("rate", 165)
+            _pick_french_voice(engine)
+            engine.say(message)
+            engine.runAndWait()
+        finally:
+            try:
+                engine.stop()
+            except Exception:
+                pass
 
     def _eligible(self, detections: list[dict], frame_height: int) -> list[dict]:
         out = []
@@ -399,7 +451,12 @@ class VoiceAnnouncer:
         record_at_sec: float | None = None,
         recorder: SpeechRecorder | None = None,
     ) -> str | None:
-        if time.time() - self._last_spoke < self.cooldown_s:
+        using_video_timeline = recorder is not None and record_at_sec is not None
+
+        if using_video_timeline:
+            if record_at_sec - self._last_spoke_video_sec < self.cooldown_s:
+                return None
+        elif time.time() - self._last_spoke < self.cooldown_s:
             return None
 
         target = self._pick_closest(self._eligible(detections, frame_height))
@@ -422,20 +479,31 @@ class VoiceAnnouncer:
         if self._stable_count < STABLE_FRAMES_REQUIRED:
             return None
 
-        now = time.time()
-        if announce_key == self._last_key and now - self._last_key_time < REPEAT_BLOCK_S:
-            return None
+        if using_video_timeline:
+            if (
+                announce_key == self._last_key
+                and record_at_sec - self._last_key_video_sec < REPEAT_BLOCK_S
+            ):
+                return None
+        else:
+            now = time.time()
+            if announce_key == self._last_key and now - self._last_key_time < REPEAT_BLOCK_S:
+                return None
 
         label_fr = target["label_fr"]
         dist_phrase = format_distance_m(target["distance_m"])
         message = f"{label_fr.capitalize()}, {dist_phrase}, {sector}."
 
-        if recorder is not None and record_at_sec is not None:
+        if using_video_timeline:
             recorder.queue(record_at_sec, message)
-        elif self.playback:
+            self._last_spoke_video_sec = record_at_sec
+            self._last_key = announce_key
+            self._last_key_video_sec = record_at_sec
+        else:
             self._speak(message)
+            now = time.time()
+            self._last_spoke = now
+            self._last_key = announce_key
+            self._last_key_time = now
 
-        self._last_spoke = now
-        self._last_key = announce_key
-        self._last_key_time = now
         return message

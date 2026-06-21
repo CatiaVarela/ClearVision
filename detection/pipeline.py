@@ -2,17 +2,38 @@
 
 from __future__ import annotations
 
-from config import CONF_COCO, DEFAULT_WORLD_CATEGORIES
+from config import CONF_COCO, CONF_PERSON, CUSTOM_MODEL_CONF, DEFAULT_WORLD_CATEGORIES
 from detection.drawing import draw_detections
 from detection.filters import (
     filter_by_min_area,
+    group_nearby_persons,
     label_to_french,
     merge_coco_and_world,
     nms_boxes,
+    select_nearby_obstacles,
     visible_vegetation_boxes,
 )
+from detection.models import load_custom_model
 from detection.vegetation import collect_vegetation_boxes
 from detection.world_detector import detect_with_world_categories
+
+
+def detect_custom_objects(custom_model, source_image, confidence: float) -> list[tuple]:
+    """Détections du modèle entraîné par l'utilisateur."""
+    custom_boxes = []
+    results = custom_model(source_image, conf=confidence, verbose=False)
+
+    for result in results:
+        if result.boxes is None:
+            continue
+        for box in result.boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            class_id = int(box.cls[0])
+            label_key = custom_model.names[class_id]
+            confidence_score = float(box.conf[0])
+            custom_boxes.append((x1, y1, x2, y2, label_key, confidence_score))
+
+    return custom_boxes
 
 
 def detection_to_dict(
@@ -65,19 +86,28 @@ def process_frame(
     fast: bool = False,
     estimate_distances: bool = False,
     world_categories: tuple[str, ...] | list[str] | None = None,
+    skip_vegetation: bool = False,
+    distance_focal_factor: float | None = None,
+    obstacle_mode: bool = False,
+    max_obstacle_distance_m: float | None = None,
+    max_obstacles_display: int | None = None,
 ):
     """
     Analyse une frame BGR : COCO + YOLO-World + végétation HSV.
-    Toutes les détections sont dessinées en bleu.
+    obstacle_mode : obstacles proches uniquement, sans arbres/végétation, distances affichées.
     Retourne (image annotée, dict d'infos).
     """
+    if obstacle_mode:
+        skip_vegetation = True
+        estimate_distances = True
+
     annotated_image = source.copy()
     image_height, image_width = annotated_image.shape[:2]
     image_area = image_height * image_width
 
-    predict_kwargs = {"conf": CONF_COCO, "verbose": False}
+    predict_kwargs = {"conf": CONF_PERSON if obstacle_mode else CONF_COCO, "verbose": False}
     if fast:
-        predict_kwargs["imgsz"] = 640
+        predict_kwargs["imgsz"] = 960 if obstacle_mode else 640
 
     if estimate_distances:
         from clearvision_voice import estimate_distance_m, label_to_fr as voice_label_to_fr
@@ -86,7 +116,7 @@ def process_frame(
         voice_label_to_fr = None
 
     if world_categories is None:
-        world_categories = DEFAULT_WORLD_CATEGORIES
+        world_categories = ("animaux",) if obstacle_mode else DEFAULT_WORLD_CATEGORIES
 
     coco_boxes, human_coordinates = detect_coco_objects(yolo_model, source, predict_kwargs)
 
@@ -94,16 +124,30 @@ def process_frame(
     if not fast and world_model is not None:
         world_boxes = detect_with_world_categories(world_model, source, world_categories)
 
+    custom_model = load_custom_model()
+    custom_boxes = []
+    if custom_model is not None:
+        custom_boxes = detect_custom_objects(custom_model, source, CUSTOM_MODEL_CONF)
+
     merged_boxes = merge_coco_and_world(coco_boxes, world_boxes)
+    if custom_boxes:
+        merged_boxes = merge_coco_and_world(merged_boxes, custom_boxes)
     merged_boxes = filter_by_min_area(merged_boxes, image_area)
 
-    vegetation_boxes, vegetation_mode, used_hsv = collect_vegetation_boxes(
-        source,
-        world_model,
-        fast=fast,
+    if skip_vegetation:
+        vegetation_boxes = []
+        vegetation_mode = "sans végétation (webcam/intérieur)"
+        used_hsv = False
+    else:
+        vegetation_boxes, vegetation_mode, used_hsv = collect_vegetation_boxes(
+            source,
+            world_model,
+            fast=fast,
+        )
+        vegetation_boxes = nms_boxes(vegetation_boxes)
+    visible_vegetation = (
+        [] if skip_vegetation else visible_vegetation_boxes(vegetation_boxes, human_coordinates, image_area)
     )
-    vegetation_boxes = nms_boxes(vegetation_boxes)
-    visible_vegetation = visible_vegetation_boxes(vegetation_boxes, human_coordinates, image_area)
 
     all_detections: list[dict] = []
 
@@ -111,7 +155,12 @@ def process_frame(
         bounding_box = (x1, y1, x2, y2)
         distance_m = None
         if estimate_distances:
-            distance_m = estimate_distance_m(bounding_box, image_height, label_key)
+            distance_m = estimate_distance_m(
+                bounding_box,
+                image_height,
+                label_key,
+                focal_length_factor=distance_focal_factor,
+            )
             label_fr = voice_label_to_fr(label_key)
         else:
             label_fr = label_to_french(label_key)
@@ -139,7 +188,12 @@ def process_frame(
 
         distance_m = None
         if estimate_distances:
-            distance_m = estimate_distance_m(bounding_box, image_height, label_key)
+            distance_m = estimate_distance_m(
+                bounding_box,
+                image_height,
+                label_key,
+                focal_length_factor=distance_focal_factor,
+            )
 
         all_detections.append(
             detection_to_dict(
@@ -152,18 +206,41 @@ def process_frame(
         )
         existing_bboxes.append(bounding_box)
 
+    if obstacle_mode:
+        from clearvision_voice import MAX_DISTANCE_M, MAX_OBSTACLES_DISPLAY
+
+        distance_limit = max_obstacle_distance_m if max_obstacle_distance_m is not None else MAX_DISTANCE_M
+        display_limit = max_obstacles_display if max_obstacles_display is not None else MAX_OBSTACLES_DISPLAY
+        detections_to_draw = select_nearby_obstacles(
+            all_detections,
+            max_distance_m=distance_limit,
+            max_count=None,
+        )
+        detections_to_draw = group_nearby_persons(
+            detections_to_draw,
+            image_width,
+            image_height,
+        )
+        if display_limit is not None:
+            detections_to_draw = detections_to_draw[:display_limit]
+        vegetation_mode = "obstacles proches (sans végétation)"
+    else:
+        detections_to_draw = all_detections
+
     drawn_count = draw_detections(
         annotated_image,
-        all_detections,
+        detections_to_draw,
         show_distance=estimate_distances,
     )
 
     return annotated_image, {
-        "detections": all_detections,
+        "detections": detections_to_draw if obstacle_mode else all_detections,
+        "all_detections": all_detections,
         "drawn_count": drawn_count,
         "veg_drawn": sum(1 for d in all_detections if d["source"] == "vegetation"),
         "mode": vegetation_mode,
         "used_hsv": used_hsv,
+        "obstacle_mode": obstacle_mode,
     }
 
 

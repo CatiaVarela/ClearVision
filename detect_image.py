@@ -4,14 +4,19 @@ import argparse
 import json
 import sys
 from pathlib import Path
+
 import cv2
+
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from detection import detect_objects_in_image, detections_to_json
 
+
 def build_output_path(image_path: Path) -> Path:
     return image_path.with_name(f"{image_path.stem}_detected{image_path.suffix}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="ClearVision — reconnaissance d'objets sur image (rectangles bleus)"
@@ -33,6 +38,7 @@ def main():
         raise FileNotFoundError(f"Image introuvable : {arguments.image.resolve()}")
 
     annotated_image, detection_info = detect_objects_in_image(source_image, fast=arguments.fast)
+
     output_path = arguments.output or build_output_path(arguments.image)
     cv2.imwrite(str(output_path), annotated_image)
     print(f"Image annotée : {output_path.resolve()}")
@@ -57,6 +63,7 @@ def main():
             cv2.destroyAllWindows()
         except cv2.error:
             pass
+
 
 if __name__ == "__main__":
     main()

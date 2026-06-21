@@ -11,6 +11,8 @@ sys.path.insert(0, str(_ROOT))
 
 from clearvision_voice import (
     MAX_DISTANCE_M,
+    MAX_OBSTACLES_DISPLAY,
+    MAX_VIDEO_ANNOUNCEMENTS,
     SpeechRecorder,
     VoiceAnnouncer,
     build_narration_wav,
@@ -32,6 +34,7 @@ def main(
     show_gui: bool = True,
     fast: bool = False,
     voice: bool = False,
+    max_obstacle_distance_m: float = MAX_DISTANCE_M,
 ):
     if voice and not fast:
         print("Mode rapide activé automatiquement avec --voice.")
@@ -69,27 +72,28 @@ def main(
     world_model = None if fast else load_world_model()
 
     frame_index = 0
-    hsv_frame_count = 0
-    vegetation_total = 0
+    frames_with_obstacles = 0
     processing_start = time.perf_counter()
 
     print(f"Traitement : {video_path.resolve()}")
-    print(f"Modèles : {YOLO_COCO_PATH.name}, {YOLO_WORLD_PATH.name if not fast else 'HSV seul'}")
+    print(f"Modèle : {YOLO_COCO_PATH.name}")
     if fast:
-        print("Mode rapide : YOLO-World désactivé (voir --fast)")
+        print("Mode rapide : YOLO-World désactivé")
+    else:
+        print(f"YOLO-World : animaux uniquement ({YOLO_WORLD_PATH.name})")
+    print(
+        f"Affichage : obstacles proches ≤ {max_obstacle_distance_m:.0f} m "
+        f"(max {MAX_OBSTACLES_DISPLAY} par image, distances en bleu)"
+    )
+    print("Végétation / arbres sur murs : désactivés")
     if voice:
-        print(f"Annonce vocale : objets à au plus {MAX_DISTANCE_M:.0f} m")
+        print(f"Annonce vocale : obstacles à au plus {MAX_DISTANCE_M:.0f} m")
     if total_frame_count > 0:
         print(f"Frames : {total_frame_count} — {frame_width}x{frame_height} @ {frames_per_second:.1f} fps")
 
     while video_capture.isOpened():
-        # SÉCURITÉ : Si on a atteint ou dépassé le nombre théorique de frames, on s'arrête
-        if total_frame_count > 0 and frame_index >= total_frame_count:
-            print(" Fin de la vidéo atteinte (sécurité du compteur).")
-            break
-
         frame_read_ok, frame = video_capture.read()
-        if not frame_read_ok or frame is None: # Ajout d'une vérification si la frame est vide
+        if not frame_read_ok:
             break
 
         annotated_frame, detection_info = process_frame(
@@ -97,9 +101,14 @@ def main(
             yolo_model,
             world_model,
             fast=fast,
-            estimate_distances=voice,
+            obstacle_mode=True,
+            max_obstacle_distance_m=max_obstacle_distance_m,
+            max_obstacles_display=MAX_OBSTACLES_DISPLAY,
         )
         video_writer.write(annotated_frame)
+
+        if detection_info["drawn_count"] > 0:
+            frames_with_obstacles += 1
 
         if voice_announcer is not None and frame_index % VOICE_FRAME_STRIDE == 0:
             frame_height, frame_width = frame.shape[:2]
@@ -112,10 +121,6 @@ def main(
             )
             if spoken_message:
                 print(f"  [voix] {spoken_message}")
-
-        vegetation_total += detection_info["veg_drawn"]
-        if detection_info["used_hsv"]:
-            hsv_frame_count += 1
 
         frame_index += 1
         if frame_index % PROGRESS_EVERY == 0:
@@ -141,20 +146,23 @@ def main(
     video_writer.release()
     if show_gui:
         cv2.destroyAllWindows()
-        for _ in range(5):
-            cv2.waitKey(1)
 
     video_duration_seconds = frame_index / frames_per_second if frames_per_second > 0 else 0.0
 
     if voice and speech_recorder is not None:
+        speech_recorder.dedupe_pending()
         if speech_recorder.pending_count > 0:
-            print(f"Synthèse vocale de {speech_recorder.pending_count} annonce(s)...")
+            print(
+                f"Synthèse vocale de {speech_recorder.pending_count} annonce(s) "
+                f"(max {MAX_VIDEO_ANNOUNCEMENTS})..."
+            )
             speech_recorder.synthesize_all()
         if speech_recorder.count > 0:
             try:
                 narration_wav_path = speech_recorder.work_dir / "narration.wav"
+                print("Assemblage de la piste audio...")
                 build_narration_wav(speech_recorder.clips, video_duration_seconds, narration_wav_path)
-                print("Fusion audio + vidéo...")
+                print("Fusion audio + vidéo (ffmpeg)...")
                 mux_audio_into_video(silent_video_path, narration_wav_path, output_path)
                 silent_video_path.unlink(missing_ok=True)
                 print(f"Voix intégrée : {speech_recorder.count} annonce(s) dans la vidéo.")
@@ -168,25 +176,44 @@ def main(
     elapsed_seconds = time.perf_counter() - processing_start
     print(f"Vidéo enregistrée : {output_path.resolve()}")
     print(f"Frames traitées : {frame_index} en {elapsed_seconds:.1f} s")
-    if frame_index:
-        print(f"Végétation (moy.) : {vegetation_total / frame_index:.1f} zone(s)/frame")
-        print(f"Secours HSV : {hsv_frame_count}/{frame_index} frame(s)")
+    if frame_index and frames_with_obstacles == 0:
+        print(
+            f"Attention : aucun obstacle ≤ {max_obstacle_distance_m:.0f} m détecté. "
+            f"Essayez --max-distance 10 ou 15 pour une scène de rue."
+        )
+    elif frame_index:
+        print(f"Frames avec obstacles affichés : {frames_with_obstacles}/{frame_index}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Détection universelle sur vidéo")
+    parser = argparse.ArgumentParser(description="Détection d'obstacles proches sur vidéo")
     parser.add_argument("--video", type=Path, default=DEFAULT_VIDEO, help="Vidéo à analyser")
     parser.add_argument("--no-gui", action="store_true", help="Sans prévisualisation OpenCV")
     parser.add_argument("--fast", action="store_true", help="Sans YOLO-World (plus rapide)")
     parser.add_argument(
         "--voice",
         action="store_true",
-        help=f"Voix intégrée dans le MP4 (détections ≤ {MAX_DISTANCE_M:.0f} m)",
+        help=f"Voix intégrée dans le MP4 (obstacles ≤ {MAX_DISTANCE_M:.0f} m)",
+    )
+    parser.add_argument(
+        "--max-distance",
+        type=float,
+        default=MAX_DISTANCE_M,
+        help=f"Distance max des obstacles affichés en m (défaut : {MAX_DISTANCE_M:.0f})",
     )
     arguments = parser.parse_args()
-    main(
-        video_path=arguments.video,
-        show_gui=not arguments.no_gui,
-        fast=arguments.fast,
-        voice=arguments.voice,
-    )
+
+    try:
+        main(
+            video_path=arguments.video,
+            show_gui=not arguments.no_gui,
+            fast=arguments.fast,
+            voice=arguments.voice,
+            max_obstacle_distance_m=arguments.max_distance,
+        )
+    except FileNotFoundError as error:
+        print(f"Erreur : {error}")
+        sys.exit(1)
+    except RuntimeError as error:
+        print(f"Erreur : {error}")
+        sys.exit(1)

@@ -17,7 +17,6 @@ clearvision_voice_*/
 
 # IDE
 .idea/
-.idea/*.xml
 
 # Tests / données lourdes
 tests/fixtures/*.jpg
@@ -30,4 +29,9 @@ images/*.webp
 # Datasets
 datasets/custom/images/
 datasets/custom/labels/
+datasets/custom/sources/
+datasets/custom/labels_scratch/
+datasets/custom/runs/
+datasets/custom/learned_classes.yaml
+datasets/custom/dataset.yaml
 runs/

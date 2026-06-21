@@ -46,3 +46,39 @@ def test_filter_by_min_area():
     filtered = filter_by_min_area(boxes, image_area=640 * 480, min_ratio=0.001)
     assert len(filtered) == 1
     assert filtered[0][4] == "big"
+
+
+def test_select_nearby_obstacles():
+    from detection.filters import select_nearby_obstacles
+
+    detections = [
+        {"label_key": "person", "label_fr": "personne", "bbox": (0, 0, 10, 10), "distance_m": 2.0, "source": "coco_or_world"},
+        {"label_key": "car", "label_fr": "voiture", "bbox": (0, 0, 10, 10), "distance_m": 6.0, "source": "coco_or_world"},
+        {"label_key": "tree_line", "label_fr": "arbre", "bbox": (0, 0, 10, 10), "distance_m": 1.0, "source": "vegetation"},
+        {"label_key": "dog", "label_fr": "chien", "bbox": (0, 0, 10, 10), "distance_m": 3.5, "source": "coco_or_world"},
+    ]
+    nearby = select_nearby_obstacles(detections, max_distance_m=4.0, max_count=2)
+    assert len(nearby) == 2
+    assert nearby[0]["label_key"] == "person"
+    assert nearby[1]["label_key"] == "dog"
+
+
+def test_group_nearby_persons():
+    from detection.filters import group_nearby_persons
+
+    detections = [
+        {"label_key": "person", "label_fr": "personne", "bbox": (100, 100, 150, 300), "distance_m": 3.0, "score": 0.9, "source": "coco_or_world"},
+        {"label_key": "person", "label_fr": "personne", "bbox": (160, 105, 210, 305), "distance_m": 2.5, "score": 0.8, "source": "coco_or_world"},
+        {"label_key": "person", "label_fr": "personne", "bbox": (500, 100, 550, 300), "distance_m": 4.0, "score": 0.7, "source": "coco_or_world"},
+        {"label_key": "car", "label_fr": "voiture", "bbox": (600, 200, 700, 350), "distance_m": 2.0, "score": 0.95, "source": "coco_or_world"},
+    ]
+    grouped = group_nearby_persons(detections, image_width=1280, image_height=720)
+
+    group_labels = [item["label_key"] for item in grouped]
+    assert "person_group" in group_labels
+    assert group_labels.count("person") == 1
+
+    person_group = next(item for item in grouped if item["label_key"] == "person_group")
+    assert person_group["person_count"] == 2
+    assert person_group["distance_m"] == 2.5
+    assert "Groupe de personnes (2)" in person_group["label_fr"]

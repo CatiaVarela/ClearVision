@@ -6,33 +6,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from ultralytics import YOLO
-
-from config import MODEL_SIZE, PROJECT_ROOT
+from config import PROJECT_ROOT
+from object_learning.trainer import train_custom_model
 
 
 def main():
     dataset_yaml = PROJECT_ROOT / "datasets" / "custom" / "dataset.yaml"
-    if not dataset_yaml.exists():
-        raise FileNotFoundError(
-            f"Dataset introuvable : {dataset_yaml}\n"
-            "Créez le fichier et annotez vos images (voir datasets/README.md)."
-        )
-
-    base_model = f"yolo11{MODEL_SIZE}.pt"
-    output_directory = PROJECT_ROOT / "datasets" / "custom" / "runs"
-
-    model = YOLO(base_model)
-    model.train(
-        data=str(dataset_yaml),
-        epochs=50,
-        imgsz=640,
-        project=str(output_directory),
-        name="clearvision_custom",
-        exist_ok=True,
-    )
-
-    print(f"Entraînement terminé. Modèle : {output_directory / 'clearvision_custom' / 'weights' / 'best.pt'}")
+    best_weights = train_custom_model(dataset_yaml=dataset_yaml, epochs=50)
+    print(f"Entraînement terminé. Modèle : {best_weights}")
+    print("Activez USE_CUSTOM_MODEL = True dans config.py pour l'utiliser.")
 
 
 if __name__ == "__main__":

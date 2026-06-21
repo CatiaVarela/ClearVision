@@ -15,7 +15,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 # --- Modèles ---
 MODEL_SIZE = "n"  # "n" | "s" | "m"
 USE_CUSTOM_MODEL = False
-YOLO_CUSTOM_PATH = PROJECT_ROOT / "datasets" / "custom" / "runs" / "best.pt"
+YOLO_CUSTOM_PATH = PROJECT_ROOT / "datasets" / "custom" / "runs" / "clearvision_custom" / "weights" / "best.pt"
+CUSTOM_MODEL_CONF = 0.35
+LEARNED_CLASSES_PATH = PROJECT_ROOT / "datasets" / "custom" / "learned_classes.yaml"
 
 WORLD_MODEL_SIZE = "s"  # yolov8{s,m,l}-world.pt
 
@@ -41,6 +43,7 @@ DEFAULT_VIDEO = PROJECT_ROOT / "videos" / "38805-418875307.mp4"
 
 # --- Seuils de confiance ---
 CONF_COCO = 0.4
+CONF_PERSON = 0.25  # seuil plus bas pour ne pas rater de passants
 CONF_VEGETATION = 0.22
 CONF_WORLD_ANIMALS = 0.22
 CONF_WORLD_PLANTS = 0.20
@@ -59,6 +62,11 @@ NMS_IOU_THRESHOLD = 0.45
 NMS_IOU_COCO_WORLD = 0.50
 MIN_WORLD_BOXES_BEFORE_HSV = 2
 MIN_GROUND_FOLIAGE_RATIO = 0.008
+
+# Regroupement de personnes proches
+PERSON_GROUP_MIN_COUNT = 2
+PERSON_GROUP_MAX_GAP_RATIO = 0.12  # écart horizontal max (ratio largeur image)
+PERSON_GROUP_CENTER_DISTANCE_RATIO = 0.10  # proximité des centres
 
 # --- Façades (faux positifs végétation) ---
 FACADE_MAX_Y_CENTER = 0.52

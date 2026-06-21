@@ -11,6 +11,9 @@ from config import (
     NMS_IOU_COCO_WORLD,
     NMS_IOU_THRESHOLD,
     OVERLAP_REJECT_RATIO,
+    PERSON_GROUP_CENTER_DISTANCE_RATIO,
+    PERSON_GROUP_MAX_GAP_RATIO,
+    PERSON_GROUP_MIN_COUNT,
 )
 
 
@@ -172,5 +175,154 @@ def filter_vegetation_boxes(boxes: list[tuple], image) -> list[tuple]:
     ]
 
 
+def select_nearby_obstacles(
+    detections: list[dict],
+    *,
+    max_distance_m: float,
+    max_count: int | None = None,
+) -> list[dict]:
+    """
+    Garde uniquement les obstacles proches triés par distance.
+    Exclut végétation et objets au-delà de max_distance_m.
+    """
+    from clearvision_voice import is_path_obstacle
+
+    nearby_obstacles = []
+    for detection in detections:
+        label_key = detection["label_key"]
+        source = detection.get("source", "coco_or_world")
+        if not is_path_obstacle(label_key, source):
+            continue
+
+        distance_m = detection.get("distance_m")
+        if distance_m is None or distance_m > max_distance_m:
+            continue
+
+        nearby_obstacles.append(detection)
+
+    nearby_obstacles.sort(key=lambda item: item["distance_m"])
+    if max_count is not None:
+        nearby_obstacles = nearby_obstacles[:max_count]
+    return nearby_obstacles
+
+
+def _horizontal_gap_between_boxes(bbox_a: tuple, bbox_b: tuple) -> int:
+    ax1, _ay1, ax2, _ay2 = bbox_a
+    bx1, _by1, bx2, _by2 = bbox_b
+    if ax2 < bx1:
+        return bx1 - ax2
+    if bx2 < ax1:
+        return ax1 - bx2
+    return 0
+
+
+def _boxes_can_form_person_group(
+    bbox_a: tuple,
+    bbox_b: tuple,
+    image_width: int,
+    image_height: int,
+) -> bool:
+    ax1, ay1, ax2, ay2 = bbox_a
+    bx1, by1, bx2, by2 = bbox_b
+
+    horizontal_gap = _horizontal_gap_between_boxes(bbox_a, bbox_b)
+    max_horizontal_gap = image_width * PERSON_GROUP_MAX_GAP_RATIO
+
+    vertical_overlap = max(0, min(ay2, by2) - max(ay1, by1))
+    minimum_height = max(1, min(ay2 - ay1, by2 - by1))
+
+    if horizontal_gap <= max_horizontal_gap and vertical_overlap >= minimum_height * 0.25:
+        return True
+
+    center_a_x = (ax1 + ax2) / 2.0
+    center_a_y = (ay1 + ay2) / 2.0
+    center_b_x = (bx1 + bx2) / 2.0
+    center_b_y = (by1 + by2) / 2.0
+    center_distance = ((center_a_x - center_b_x) ** 2 + (center_a_y - center_b_y) ** 2) ** 0.5
+    return center_distance <= image_width * PERSON_GROUP_CENTER_DISTANCE_RATIO
+
+
+def _merge_person_group(members: list[dict]) -> dict:
+    merged_x1 = min(member["bbox"][0] for member in members)
+    merged_y1 = min(member["bbox"][1] for member in members)
+    merged_x2 = max(member["bbox"][2] for member in members)
+    merged_y2 = max(member["bbox"][3] for member in members)
+    person_count = len(members)
+    closest_distance = min(member["distance_m"] for member in members if member.get("distance_m") is not None)
+    best_score = max(member.get("score") or 0.0 for member in members)
+
+    if person_count >= PERSON_GROUP_MIN_COUNT:
+        label_fr = f"Groupe de personnes ({person_count})"
+        label_key = "person_group"
+    else:
+        label_fr = members[0].get("label_fr", "personne")
+        label_key = "person"
+
+    return {
+        "label_key": label_key,
+        "label_fr": label_fr,
+        "bbox": (merged_x1, merged_y1, merged_x2, merged_y2),
+        "score": best_score,
+        "source": members[0].get("source", "coco_or_world"),
+        "distance_m": closest_distance,
+        "person_count": person_count,
+    }
+
+
+def group_nearby_persons(
+    detections: list[dict],
+    image_width: int,
+    image_height: int,
+) -> list[dict]:
+    """
+    Regroupe les personnes proches en une seule détection « Groupe de personnes ».
+    Les autres obstacles (voitures, etc.) restent inchangés.
+    """
+    persons = [detection for detection in detections if detection.get("label_key") == "person"]
+    other_obstacles = [detection for detection in detections if detection.get("label_key") != "person"]
+
+    if len(persons) < PERSON_GROUP_MIN_COUNT:
+        return detections
+
+    parent = list(range(len(persons)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(index_a: int, index_b: int) -> None:
+        root_a = find(index_a)
+        root_b = find(index_b)
+        if root_a != root_b:
+            parent[root_b] = root_a
+
+    for index_a in range(len(persons)):
+        for index_b in range(index_a + 1, len(persons)):
+            if _boxes_can_form_person_group(
+                persons[index_a]["bbox"],
+                persons[index_b]["bbox"],
+                image_width,
+                image_height,
+            ):
+                union(index_a, index_b)
+
+    clusters: dict[int, list[dict]] = {}
+    for index, person in enumerate(persons):
+        cluster_root = find(index)
+        clusters.setdefault(cluster_root, []).append(person)
+
+    grouped_persons = [_merge_person_group(members) for members in clusters.values()]
+    grouped_results = grouped_persons + other_obstacles
+    grouped_results.sort(key=lambda item: item.get("distance_m") or 999.0)
+    return grouped_results
+
+
 def label_to_french(label_key: str) -> str:
+    from object_learning.learned_labels import learned_label_fr
+
+    learned = learned_label_fr(label_key)
+    if learned:
+        return learned
     return config.LABEL_FR.get(label_key, label_key.replace("_", " "))
